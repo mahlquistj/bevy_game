@@ -2,11 +2,9 @@
 
 use bevy::prelude::*;
 use bevy_ecs_tilemap::prelude::*;
-use bevy_fog_of_war::prelude::Capturable;
 
 use crate::{
     asset_tracking::LoadResource,
-    audio::music,
     demo::player::{PlayerAssets, player},
     screens::Screen,
 };
@@ -48,7 +46,7 @@ pub fn spawn_level(
         TilemapSize { x: 10, y: 10 },
     );
 
-    let player = player(400.0, &player_assets);
+    let player = player(&player_assets);
     let level_entity = commands
         .spawn((
             Name::new("Level"),

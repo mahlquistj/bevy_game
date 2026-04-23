@@ -1,6 +1,6 @@
 //! Player-specific behavior.
 
-use std::f32::consts::{FRAC_1_PI, FRAC_2_PI};
+use std::f32::consts::FRAC_2_PI;
 
 use bevy::{
     image::{ImageLoaderSettings, ImageSampler},
@@ -9,34 +9,36 @@ use bevy::{
 use bevy_fog_of_war::prelude::VisionSource;
 
 use crate::{
-    AppSystems, PausableSystems, Pause,
+    AppSystems, PausableSystems,
     asset_tracking::LoadResource,
-    demo::movement::{MovementController, ScreenWrap},
+    demo::{
+        movement::MovementController,
+        player::controller::{PlayerController, PlayerState},
+    },
 };
 
-pub(super) fn plugin(app: &mut App) {
-    app.load_resource::<PlayerAssets>();
+mod controller;
 
+const FOW_CONE_BASE_ANGLE: f32 = FRAC_2_PI * 2.0;
+const FOW_CONE_BASE_RANGE: f32 = 400.0;
+const FOW_IDLE_MULTIPLIER: f32 = 1.2;
+const FOW_RUNNING_MULTIPLIER: f32 = 0.9;
+const FOW_CIRCLE_BASE_RANGE: f32 = 120.0;
+
+pub(super) fn plugin(app: &mut App) {
+    app.add_plugins(controller::plugin);
+    app.load_resource::<PlayerAssets>();
     // Record directional input as movement controls.
     app.add_systems(
         Update,
-        (
-            record_player_directional_keyboard_input
-                .in_set(AppSystems::RecordInput)
-                .in_set(PausableSystems),
-            record_player_directional_controller_input
-                .in_set(AppSystems::RecordInput)
-                .in_set(PausableSystems),
-            update_player_vision
-                .in_set(AppSystems::Update)
-                .in_set(PausableSystems),
-        ),
+        (update_player_vision
+            .in_set(AppSystems::Update)
+            .in_set(PausableSystems),),
     );
 }
 
 /// The player character.
 pub fn player(
-    max_speed: f32,
     player_assets: &PlayerAssets,
     // texture_atlas_layouts: &mut Assets<TextureAtlasLayout>,
 ) -> impl Bundle {
@@ -49,136 +51,46 @@ pub fn player(
 
     (
         Name::new("Player"),
-        Player::default(),
+        Player,
         Sprite::from_image(player_assets.sprite.clone()),
         Transform::from_scale(Vec2::splat(1.0).extend(1.0)).with_translation(Vec3 {
             x: 0.0,
             y: 0.0,
             z: 10.0,
         }),
-        MovementController {
-            max_speed,
-            ..default()
-        },
-        ScreenWrap,
+        PlayerController::default(),
         // player_animation,
 
         // Fog of war
-        VisionSource::cone(400.0, 0.0, FRAC_2_PI),
-        children![(Transform::IDENTITY, VisionSource::circle(100.0),)],
+        VisionSource::cone(FOW_CONE_BASE_RANGE, 0.0, FOW_CONE_BASE_ANGLE),
+        children![(
+            Transform::IDENTITY,
+            VisionSource::circle(FOW_CIRCLE_BASE_RANGE),
+        )],
     )
 }
 
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Default, Reflect)]
 #[reflect(Component)]
-struct Player {
-    state: PlayerState,
-}
+struct Player;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Reflect)]
-enum PlayerState {
-    Idle,
-    #[default]
-    Walking,
-    Running,
-}
+fn update_player_vision(query: Single<(&PlayerController, &Transform, &mut VisionSource)>) {
+    let (controller, transform, mut vision_cone) = query.into_inner();
+    let (axis, angle) = transform.rotation.to_axis_angle();
+    vision_cone.direction = axis.z * angle;
 
-fn record_player_directional_keyboard_input(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mut controller_query: Query<&mut MovementController, With<Player>>,
-) {
-    // Collect directional input.
-    let mut intent = Vec2::ZERO;
-    if keyboard.pressed(KeyCode::KeyW) || keyboard.pressed(KeyCode::ArrowUp) {
-        intent.y += 1.0;
-    }
-    if keyboard.pressed(KeyCode::KeyS) || keyboard.pressed(KeyCode::ArrowDown) {
-        intent.y -= 1.0;
-    }
-    if keyboard.pressed(KeyCode::KeyA) || keyboard.pressed(KeyCode::ArrowLeft) {
-        intent.x -= 1.0;
-    }
-    if keyboard.pressed(KeyCode::KeyD) || keyboard.pressed(KeyCode::ArrowRight) {
-        intent.x += 1.0;
-    }
-
-    // Normalize intent so that diagonal movement is the same speed as horizontal / vertical.
-    // This should be omitted if the input comes from an analog stick instead.
-    let intent = intent.normalize_or_zero();
-
-    // Apply movement intent to controllers.
-    for mut controller in &mut controller_query {
-        controller.intent = intent;
-    }
-}
-
-fn record_player_directional_controller_input(
-    gamepads: Query<(Entity, &Gamepad)>,
-    mut controller_query: Query<(&mut Player, &mut MovementController)>,
-) {
-    // Collect directional input.
-    let mut intent = Vec2::ZERO;
-    let mut rotation = Vec2::ZERO;
-    let mut new_state = PlayerState::default();
-
-    for (_, gamepad) in &gamepads {
-        if gamepad.pressed(GamepadButton::RightTrigger) {
-            new_state = PlayerState::Running;
+    match controller.state {
+        PlayerState::Idle => {
+            vision_cone.range = FOW_CONE_BASE_RANGE * FOW_IDLE_MULTIPLIER;
+            vision_cone.angle = FOW_CONE_BASE_ANGLE * FOW_IDLE_MULTIPLIER;
         }
-
-        let left_stick = gamepad.left_stick();
-        if left_stick.x.abs() >= 0.1 {
-            intent.x = left_stick.x;
+        PlayerState::Walking => {
+            vision_cone.range = FOW_CONE_BASE_RANGE;
+            vision_cone.angle = FOW_CONE_BASE_ANGLE;
         }
-        if left_stick.y.abs() >= 0.1 {
-            intent.y = left_stick.y;
-        }
-
-        let right_stick = gamepad.right_stick();
-        if right_stick.x.abs() >= 0.1 {
-            rotation.x = right_stick.x;
-        }
-        if right_stick.y.abs() >= 0.1 {
-            rotation.y = right_stick.y;
-        }
-    }
-
-    if intent == Vec2::ZERO {
-        new_state = PlayerState::Idle
-    }
-
-    // Normalize intent so that diagonal movement is the same speed as horizontal / vertical.
-    // This should be omitted if the input comes from an analog stick instead.
-    // let intent = intent;
-
-    // Apply movement intent to controllers.
-    for (mut player, mut controller) in &mut controller_query {
-        player.state = new_state;
-        controller.intent = intent;
-        if rotation != Vec2::ZERO {
-            controller.facing = rotation;
-        }
-    }
-}
-
-fn update_player_vision(mut query: Query<(&Player, &Transform, &mut VisionSource)>) {
-    for (player, transform, mut vision_cone) in &mut query {
-        let (axis, angle) = transform.rotation.to_axis_angle();
-        vision_cone.direction = axis.z * angle;
-
-        match player.state {
-            PlayerState::Idle => {
-                vision_cone.range = 600.0;
-                vision_cone.angle = FRAC_2_PI * 1.5;
-            }
-            PlayerState::Walking => {
-                vision_cone.range = 400.0;
-                vision_cone.angle = FRAC_2_PI * 1.5;
-            }
-            PlayerState::Running => {
-                vision_cone.range = 200.0;
-                vision_cone.angle = FRAC_1_PI;
-            }
+        PlayerState::Running => {
+            vision_cone.range = FOW_CONE_BASE_RANGE * FOW_RUNNING_MULTIPLIER;
+            vision_cone.angle = FOW_CONE_BASE_ANGLE * FOW_RUNNING_MULTIPLIER;
         }
     }
 }

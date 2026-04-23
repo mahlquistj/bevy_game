@@ -14,6 +14,8 @@ mod theme;
 
 use bevy::{asset::AssetMetaCheck, prelude::*};
 use bevy_fog_of_war::prelude::*;
+#[cfg(feature = "dev")]
+use bevy_inspector_egui::bevy_egui::PrimaryEguiContext;
 
 fn main() -> AppExit {
     App::new().add_plugins(AppPlugin).run()
@@ -98,8 +100,18 @@ struct Pause(pub bool);
 #[derive(SystemSet, Copy, Clone, Eq, PartialEq, Hash, Debug)]
 struct PausableSystems;
 
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+struct WorldCamera;
+
 fn spawn_camera(mut commands: Commands) {
-    commands.spawn((Name::new("Camera"), Camera2d, FogOfWarCamera));
+    commands.spawn((
+        Name::new("Camera"),
+        Camera2d,
+        FogOfWarCamera,
+        WorldCamera,
+        #[cfg(feature = "dev")]
+        PrimaryEguiContext,
+    ));
     commands.insert_resource(FogMapSettings {
         enabled: true,
         fog_color_unexplored: Color::linear_rgba(0.0, 0.0, 0.0, 1.0),
